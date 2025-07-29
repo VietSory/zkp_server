@@ -8,14 +8,28 @@ class PoseidonMerkleTree {
     this.layers = [];
     this.poseidon = null;
     this.F = null;
+    this.timestamp = null;
+    this.finalRoot = null;
   }
 
   // Initialize Poseidon
   async init() {
     this.poseidon = await buildPoseidon();
     this.F = this.poseidon.F;
+    this.timestamp = Date.now();
     await this.buildTree();
+    await this.computeFinalRoot();
   }
+
+ async initFromJSON(jsonData) {
+    this.poseidon = await buildPoseidon();
+    this.F = this.poseidon.F;
+    this.leaves = jsonData.leaves;    // <-- Copy data
+    this.layers = jsonData.layers;    // <-- Copy data
+    this.timestamp = jsonData.timestamp;
+    this.finalRoot = jsonData.finalRoot;
+  }
+
 
   // Hash function sử dụng Poseidon
   hash(inputs) {
@@ -34,6 +48,20 @@ class PoseidonMerkleTree {
     });
 
     return this.F.toString(this.poseidon(fieldInputs));
+  }
+
+  // Tính root cuối cùng = hash(merkleRoot + timestamp)
+  async computeFinalRoot() {
+    const merkleRoot = this.getRoot();
+    if (!merkleRoot || !this.timestamp) return null;
+    
+    // Hash(merkleRoot + timestamp)
+    this.finalRoot = this.hash([
+      BigInt(merkleRoot),
+      BigInt(this.timestamp)
+    ]);
+    
+    return this.finalRoot;
   }
 
   // Hash một leaf node từ [UID, balance]
@@ -91,7 +119,7 @@ class PoseidonMerkleTree {
   }
 
   // Get proof cho một UID
-  getProof(uid) {
+  getProofFromStoredData(uid) {
     // Tìm leaf node
     const leafLayer = this.layers[0];
     let nodeIndex = leafLayer.findIndex(node => node.uid === uid);
@@ -124,7 +152,9 @@ class PoseidonMerkleTree {
       balance: currentNode.balance,
       leafHash: currentNode.hash,
       proof: proof,
-      root: this.getRoot()
+      merkleRoot: this.getRoot(),
+      timestamp: this.timestamp,
+      finalRoot: this.finalRoot
     };
   }
 
@@ -146,13 +176,30 @@ class PoseidonMerkleTree {
       }
     }
     
-    return computedHash === root;
+     // Verify merkle path
+    const merklePathValid = computedHash === proof.merkleRoot;
+    
+    // Verify final root (root + timestamp)
+    const computedFinalRoot = this.hash([
+      BigInt(proof.merkleRoot),
+      BigInt(proof.timestamp)
+    ]);
+    
+    const finalRootValid = computedFinalRoot === proof.finalRoot;
+    
+    return {
+      merklePathValid,
+      finalRootValid,
+      overallValid: merklePathValid && finalRootValid
+    };
   }
 
   // Export tree data to JSON
   exportToJSON() {
     return {
-      root: this.getRoot(),
+      merkleRoot: this.getRoot(),
+      timestamp: this.timestamp,
+      finalRoot: this.finalRoot,
       leaves: this.leaves,
       layers: this.layers.map(layer => 
         layer.map(node => ({
@@ -162,7 +209,6 @@ class PoseidonMerkleTree {
         }))
       ),
       hashFunction: 'poseidon',
-      timestamp: Date.now()
     };
   }
 }
@@ -182,7 +228,7 @@ async function buildMerkleTree(input) {
   return tree;
 }
 
-// Hàm get proof từ UID
+// Hàm get proof từ UID - OPTIMIZED VERSION
 async function getMerkleProof(uid, treeDataPath = null) {
   let treeData;
   
@@ -195,11 +241,11 @@ async function getMerkleProof(uid, treeDataPath = null) {
     treeData = JSON.parse(fs.readFileSync(defaultPath, 'utf8'));
   }
   
-  // Rebuild tree từ data
-  const tree = new PoseidonMerkleTree(treeData.leaves);
-  await tree.init();
+  const tree = new PoseidonMerkleTree([]);
+  await tree.initFromJSON(treeData);
   
-  const proof = tree.getProof(uid);
+  // Get proof từ stored data
+  const proof = tree.getProofFromStoredData(uid);
   
   if (proof) {
     // Lưu proof vào file JSON
@@ -210,6 +256,14 @@ async function getMerkleProof(uid, treeDataPath = null) {
   
   return proof;
 }
+
+async function verifyMerkleProof(uid, balance, proofData) {
+  const tree = new PoseidonMerkleTree([]);
+  await tree.initFromJSON({ leaves: [], layers: [] }); // Chỉ cần poseidon function
+  
+  return tree.verifyProof(uid, balance, proofData.proof, proofData.root);
+}
+
 
 // Helper function để convert UID string to field element
 function uidToFieldElement(uid) {
@@ -264,22 +318,3 @@ if (require.main === module) {
     }
   })();
 }
-
-/* cách sử dụng
-const { buildMerkleTree, getMerkleProof } = require('./poseidon-merkle-tree');
-
-async function main() {
-  // Build tree
-  const userData = [
-    ['user123', 5000],
-    ['user456', 3000],
-    // ...
-  ];
-  const tree = await buildMerkleTree(userData);
-
-  // Get proof
-  const proof = await getMerkleProof('user123');
-}
-
-main();
-*/
